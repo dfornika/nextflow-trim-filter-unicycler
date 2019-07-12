@@ -46,46 +46,6 @@ process fastqc_pre_trim {
 }
 
 /*
- * MultiQC Illumina (Pre-Trimming)
- */
-process multiqc_illumina_pre_trim {
-    cpus 8
-    conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "multiqc_report_illumina.html"
-
-    input:
-    file '*_fastqc.zip' from illumina_fastqc_results_ch.collect()
-
-    output:
-    file 'multiqc_report_illumina.html'
-    
-    script:
-    """
-    multiqc -n multiqc_report_illumina.html .
-    """
-}
-
-/*
- * MultiQC MinION (Pre-Trimming)
- */
-process multiqc_minion_pre_trim {
-    cpus 8
-    conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "multiqc_report_minion.html"
-
-    input:
-    file '*_fastqc.zip' from minion_fastqc_results_ch.collect()
-
-    output:
-    file 'multiqc_report_minion.html'
-    
-    script:
-    """
-    multiqc -n multiqc_report_minion.html .
-    """
-}
-
-/*
  * Trim with illumina reads with trim_galore.
  */
 process trim_illumina {
@@ -97,7 +57,7 @@ process trim_illumina {
     set sample_id, file(read_1), file(read_2) from trim_illumina_ch
 
     output:
-    set file("*_val_1.fq.gz"), file("*_val_2.fq.gz") into illumina_trimmed_ch
+    set file("*_val_1.fq.gz"), file("*_val_2.fq.gz") into illumina_trimmed_fastqc_ch
 
     script:
     """
@@ -121,13 +81,42 @@ process trim_minion {
     !(read_l.name =~ /^input.\d/) 
     
     output:
-    file("*.trim.fastq.gz") into minion_trimmed_ch
+    set sample_id, file("*.trim.fastq.gz") into minion_trimmed_ch
 
     script:
     """
     porechop --threads 16  -i $read_l -o ${sample_id}.MinION.trim.fastq.gz
     """
 }
+
+/*
+ * Filter minion reads with filtlong.
+ */
+process filtlong_minion {
+    tag "$sample_id"
+    cpus 4
+    memory '2 GB'
+    conda '/home/dfornika/miniconda3/envs/filtlong-0.2.0'
+
+    input:
+    set sample_id, file(read_l) from minion_trimmed_ch
+
+    when:
+    !(read_l.name =~ /^input.\d/) 
+    
+    output:
+    file("*.trim.filt.fastq.gz") into minion_trimmed_filtered_fastqc_ch
+    
+    script:
+    """
+    filtlong  \
+    --min_length 1000 \
+    --keep_percent 90 \
+    --length_weight 0.5 \
+    $read_l | gzip > ${sample_id}.MinION.trim.filt.fastq.gz
+    """
+}
+    
 
 /*
  * FastQC (Post-Trimming)
@@ -138,12 +127,12 @@ process fastqc_post_trim {
     conda '/home/dfornika/miniconda3/envs/fastqc-0.11.8'
 
     input:
-    set file(read_1), file(read_2) from illumina_trimmed_ch
-    file read_l from minion_trimmed_ch
+    set file(read_1), file(read_2) from illumina_trimmed_fastqc_ch
+    file read_l from minion_trimmed_filtered_fastqc_ch
 
     output:
-    file "*_R{1,2}_*_fastqc.zip" into illumina_trimmed_fastqc_results_ch
-    file "*MinION*fastqc.zip" into minion_trimmed_fastqc_results_ch
+    file "*_R{1,2}_*_fastqc.zip" into illumina_fastqc_results_ch
+    file "*MinION*fastqc.zip" into minion_fastqc_results_ch
 
     script:
     """
@@ -157,17 +146,17 @@ process fastqc_post_trim {
 process multiqc_illumina_post_trim {
     cpus 8
     conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "multiqc_report_illumina_post_trimmming.html"
+    publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
 
     input:
-    file '*_fastqc.zip' from illumina_trimmed_fastqc_results_ch.collect()
+    file '*_fastqc.zip' from illumina_fastqc_results_ch.collect()
 
     output:
-    file 'multiqc_report_illumina_post_trimming.html'
+    file '*.html'
 
     script:
     """
-    multiqc -n multiqc_report_illumina_post_trimming.html .
+    multiqc -n multiqc_report_illumina.html .
     """
 }
 
@@ -177,16 +166,40 @@ process multiqc_illumina_post_trim {
 process multiqc_minion_post_trim {
     cpus 8
     conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "multiqc_report_minion_post_trimming.html"
+    publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
 
     input:
-    file '*_fastqc.zip' from minion_trimmed_fastqc_results_ch.collect()
+    file '*_fastqc.zip' from minion_fastqc_results_ch.collect()
 
     output:
-    file 'multiqc_report_minion_post_trimming.html'
+    file '*.html'
 
     script:
     """
-    multiqc -n multiqc_report_minion_post_trimming.html .
+    multiqc -n multiqc_report_minion.html .
     """
 }
+
+/*
+ * Assemble with Unicycler
+
+process unicycler_assemble {
+    cpus 16
+    conda '/home/dfornika/miniconda3/envs/unicycler-0.4.7'
+    publishDir "${params.outdir}", mode: 'copy', pattern: "*_assembly.fasta"
+
+    input:
+    set sample_id, file(), file(), file() from minion_illumina_join_ch
+
+    output:
+    file ''
+
+    script:
+    """
+    unicycler \
+    --threads 16 \
+
+    """
+}
+*/
+
