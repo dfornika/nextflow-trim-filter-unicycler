@@ -58,6 +58,7 @@ process trim_illumina {
 
     output:
     set file("*_val_1.fq.gz"), file("*_val_2.fq.gz") into illumina_trimmed_fastqc_ch
+    set sample_id, file("*_val_1.fq.gz"), file("*_val_2.fq.gz") into illumina_trimmed_unicycler_ch
 
     script:
     """
@@ -106,6 +107,7 @@ process filtlong_minion {
     
     output:
     file("*.trim.filt.fastq.gz") into minion_trimmed_filtered_fastqc_ch
+    set sample_id, file("*.trim.filt.fastq.gz") into minion_trimmed_filtered_unicycler_ch
     
     script:
     """
@@ -131,14 +133,15 @@ process fastqc_post_trim {
     file read_l from minion_trimmed_filtered_fastqc_ch
 
     output:
-    file "*_R{1,2}_*_fastqc.zip" into illumina_fastqc_results_ch
-    file "*MinION*fastqc.zip" into minion_fastqc_results_ch
+    file "*_R{1,2}_*_fastqc.zip" into illumina_trimmed_fastqc_results_ch
+    file "*MinION*fastqc.zip" into minion_trimmed_fastqc_results_ch
 
     script:
     """
     fastqc -q -t 8 *.fastq.gz *.fq.gz
     """
 }
+
 
 /*
  * MultiQC Illumina (Post-Trimming)
@@ -149,7 +152,7 @@ process multiqc_illumina_post_trim {
     publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
 
     input:
-    file '*_fastqc.zip' from illumina_fastqc_results_ch.collect()
+    file '*_fastqc.zip' from illumina_fastqc_results_ch.mix(illumina_trimmed_fastqc_results_ch).collect()
 
     output:
     file '*.html'
@@ -169,7 +172,7 @@ process multiqc_minion_post_trim {
     publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
 
     input:
-    file '*_fastqc.zip' from minion_fastqc_results_ch.collect()
+    file '*_fastqc.zip' from minion_fastqc_results_ch.mix(minion_trimmed_fastqc_results_ch).collect()
 
     output:
     file '*.html'
@@ -180,16 +183,18 @@ process multiqc_minion_post_trim {
     """
 }
 
+illumina_trimmed_unicycler_ch
+
 /*
  * Assemble with Unicycler
-
+ */
 process unicycler_assemble {
     cpus 16
     conda '/home/dfornika/miniconda3/envs/unicycler-0.4.7'
     publishDir "${params.outdir}", mode: 'copy', pattern: "*_assembly.fasta"
 
     input:
-    set sample_id, file(), file(), file() from minion_illumina_join_ch
+    set sample_id, file(read_1), file(read_2), file(read_l) from illumina_trimmed_unicycler_ch.join(minion_trimmed_filtered_unicycler_ch)
 
     output:
     file ''
@@ -201,5 +206,5 @@ process unicycler_assemble {
 
     """
 }
-*/
+
 
