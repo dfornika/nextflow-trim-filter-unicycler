@@ -37,7 +37,7 @@ process fastqc_pre_trim {
     file "*_R{1,2}_*_fastqc.zip" into illumina_fastqc_results_ch
     file "*MinION*fastqc.zip" optional true into minion_fastqc_results_ch
     set sample_id, file(read_1), file(read_2) into trim_illumina_ch
-    set sample_id, file(read_l) into trim_minion_ch
+    set sample_id, file(read_l) into filt_minion_ch
     
     script:
     """
@@ -66,6 +66,38 @@ process trim_illumina {
     """
 }
 
+
+/*
+ * Filter minion reads with filtlong.
+ */
+process filtlong_minion {
+    tag "$sample_id"
+    cpus 4
+    memory '2 GB'
+    conda '/home/dfornika/miniconda3/envs/filtlong-0.2.0'
+
+    input:
+    set sample_id, file(read_l) from filt_minion_ch
+
+    when:
+    !(read_l.name =~ /^input.\d/) 
+    
+    output:
+    set sample_id, file("*.filt.fastq.gz") into trim_minion_ch
+    
+    script:
+    """
+    filtlong  \
+    --min_length 1000 \
+    --keep_percent 90 \
+    --length_weight 0.5 \
+    --mean_q_weight 10 \
+    --target_bases 500000000 \
+    $read_l | gzip > ${sample_id}.MinION.filt.fastq.gz
+    """
+}
+
+
 /*
  * Trim minion reads with porechop.
  */
@@ -82,43 +114,13 @@ process trim_minion {
     !(read_l.name =~ /^input.\d/) 
     
     output:
-    set sample_id, file("*.trim.fastq.gz") into minion_trimmed_ch
-
+    file("*.trim.fastq.gz") into minion_trimmed_filtered_fastqc_ch
+    set sample_id, file("*.trim.fastq.gz") into minion_trimmed_filtered_unicycler_ch
     script:
     """
-    porechop --threads 16  -i $read_l -o ${sample_id}.MinION.trim.fastq.gz
+    porechop --threads 16  -i $read_l -o ${sample_id}.MinION.filt.trim.fastq.gz
     """
 }
-
-/*
- * Filter minion reads with filtlong.
- */
-process filtlong_minion {
-    tag "$sample_id"
-    cpus 4
-    memory '2 GB'
-    conda '/home/dfornika/miniconda3/envs/filtlong-0.2.0'
-
-    input:
-    set sample_id, file(read_l) from minion_trimmed_ch
-
-    when:
-    !(read_l.name =~ /^input.\d/) 
-    
-    output:
-    file("*.trim.filt.fastq.gz") into minion_trimmed_filtered_fastqc_ch
-    set sample_id, file("*.trim.filt.fastq.gz") into minion_trimmed_filtered_unicycler_ch
-    
-    script:
-    """
-    filtlong  \
-    --min_length 1000 \
-    --keep_percent 90 \
-    --length_weight 0.5 \
-    $read_l | gzip > ${sample_id}.MinION.trim.filt.fastq.gz
-    """
-}
-    
 
 /*
  * FastQC (Post-Trimming)
@@ -194,17 +196,31 @@ process unicycler_assemble {
     publishDir "${params.outdir}", mode: 'copy', pattern: "*_assembly.fasta"
 
     input:
-    set sample_id, file(read_1), file(read_2), file(read_l) from illumina_trimmed_unicycler_ch.join(minion_trimmed_filtered_unicycler_ch)
+    set sample_id, file(read_1), file(read_2), file(read_l) from illumina_trimmed_unicycler_ch.join(minion_trimmed_filtered_unicycler_ch, remainder: true)
 
     output:
-    file ''
+    file '*_assembly.fasta'
 
     script:
-    """
-    unicycler \
-    --threads 16 \
-
-    """
+    if( read_l.name =~ /^input.\d/ )
+        """
+        unicycler \
+        --threads 16 \
+        -1 $read_1 \
+        -2 $read_2 \
+        -o .
+        cp assembly.fasta ${sample_id}_assembly.fasta
+        """
+    else
+	"""
+        unicycler \
+        --threads 16 \
+        -1 $read_1 \
+        -2 $read_2 \
+        -l $read_l \
+        -o .
+        cp assembly.fasta ${sample_id}_assembly.fasta
+        """
 }
 
 
