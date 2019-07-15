@@ -37,7 +37,7 @@ process fastqc_pre_trim {
     file "*_R{1,2}_*_fastqc.zip" into illumina_fastqc_results_ch
     file "*MinION*fastqc.zip" optional true into minion_fastqc_results_ch
     set sample_id, file(read_1), file(read_2) into trim_illumina_ch
-    set sample_id, file(read_l) into filt_minion_ch
+    set sample_id, file(read_1), file(read_2), file(read_l) into filt_minion_ch
     
     script:
     """
@@ -62,7 +62,11 @@ process trim_illumina {
 
     script:
     """
-    trim_galore --cores 4 --basename $sample_id --paired $read_1 $read_2
+    trim_galore \
+    --cores 4 \
+    --quality 10 \
+    --basename $sample_id \
+    --paired $read_1 $read_2
     """
 }
 
@@ -77,7 +81,7 @@ process filtlong_minion {
     conda '/home/dfornika/miniconda3/envs/filtlong-0.2.0'
 
     input:
-    set sample_id, file(read_l) from filt_minion_ch
+    set sample_id, file(read_1), file(read_2), file(read_l) from filt_minion_ch
 
     when:
     !(read_l.name =~ /^input.\d/) 
@@ -88,11 +92,13 @@ process filtlong_minion {
     script:
     """
     filtlong  \
-    --min_length 1000 \
+    --min_length 750 \
     --keep_percent 90 \
     --length_weight 0.5 \
     --mean_q_weight 10 \
     --target_bases 500000000 \
+    -1 $read_1 \
+    -2 $read_2 \
     $read_l | gzip > ${sample_id}.MinION.filt.fastq.gz
     """
 }
@@ -118,9 +124,13 @@ process trim_minion {
     set sample_id, file("*.trim.fastq.gz") into minion_trimmed_filtered_unicycler_ch
     script:
     """
-    porechop --threads 16  -i $read_l -o ${sample_id}.MinION.filt.trim.fastq.gz
+    porechop \
+    --threads 16  \
+    -i $read_l \
+    -o ${sample_id}.MinION.filt.trim.fastq.gz
     """
 }
+
 
 /*
  * FastQC (Post-Trimming)
@@ -151,7 +161,7 @@ process fastqc_post_trim {
 process multiqc_illumina_post_trim {
     cpus 8
     conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
+    publishDir "${params.outdir}/reports", mode: 'copy', pattern: "*.html"
 
     input:
     file '*_fastqc.zip' from illumina_fastqc_results_ch.mix(illumina_trimmed_fastqc_results_ch).collect()
@@ -165,13 +175,14 @@ process multiqc_illumina_post_trim {
     """
 }
 
+
 /*
  * MultiQC MinION (Post-Trimming)
  */
 process multiqc_minion_post_trim {
     cpus 8
     conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "*.html"
+    publishDir "${params.outdir}/reports", mode: 'copy', pattern: "*.html"
 
     input:
     file '*_fastqc.zip' from minion_fastqc_results_ch.mix(minion_trimmed_fastqc_results_ch).collect()
@@ -185,7 +196,6 @@ process multiqc_minion_post_trim {
     """
 }
 
-illumina_trimmed_unicycler_ch
 
 /*
  * Assemble with Unicycler
@@ -193,13 +203,13 @@ illumina_trimmed_unicycler_ch
 process unicycler_assemble {
     cpus 16
     conda '/home/dfornika/miniconda3/envs/unicycler-0.4.7'
-    publishDir "${params.outdir}", mode: 'copy', pattern: "*_assembly.fasta"
+    publishDir "${params.outdir}/assemblies", mode: 'copy', pattern: "*_assembly.fasta"
 
     input:
     set sample_id, file(read_1), file(read_2), file(read_l) from illumina_trimmed_unicycler_ch.join(minion_trimmed_filtered_unicycler_ch, remainder: true)
 
     output:
-    file '*_assembly.fasta'
+    set sample_id, file('*_assembly.fasta') into assemblies_ch
 
     script:
     if( read_l.name =~ /^input.\d/ )
@@ -224,3 +234,46 @@ process unicycler_assemble {
 }
 
 
+/*
+ * QUAST
+ */
+process quast {
+    cpus 8
+    conda '/home/dfornika/miniconda3/envs/quast-5.0.2'
+
+    input:
+    set sample_id, file(assembly) from assemblies_ch
+
+    output:
+    file('*quast_output') into quast_results_ch
+
+    script:
+    """
+    quast \
+    --no-plots \
+    --no-html \
+    -o quast_output \
+    $assembly
+    """
+}
+
+
+/*
+ * MultiQC Assemblies
+ */
+process multiqc_assemblies {
+    cpus 8
+    conda '/home/dfornika/miniconda3/envs/multiqc-1.7'
+    publishDir "${params.outdir}/reports", mode: 'copy', pattern: "*.html"
+
+    input:
+    file('quast_output') from quast_results_ch.collect()
+
+    output:
+    file '*.html'
+
+    script:
+    """
+    multiqc -n multiqc_report_assemblies.html .
+    """
+}
